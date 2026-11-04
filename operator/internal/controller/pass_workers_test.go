@@ -31,6 +31,7 @@ import (
 
 	v1alpha1 "github.com/NVIDIA/nodewright/operator/api/nodewright/v1alpha1"
 	skyhookv1 "github.com/NVIDIA/nodewright/operator/api/v1alpha1"
+	"github.com/NVIDIA/nodewright/operator/internal/wrapper"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
@@ -369,5 +370,25 @@ var _ = Describe("pass copy reductions", func() {
 		copied, err := BuildState(&v1alpha1.NodeWrightList{Items: []v1alpha1.NodeWright{nw}}, working, &v1alpha1.DeploymentPolicyList{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(copied.tracker.GetOriginal(&working.Items[0])).NotTo(BeIdenticalTo(&cached))
+	})
+
+	It("finds nodes by name, including ones set before the first AddNode", func() {
+		first, err := wrapper.NewSkyhookNode(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "a"}}, &v1alpha1.NodeWright{ObjectMeta: metav1.ObjectMeta{Name: "nw"}})
+		Expect(err).NotTo(HaveOccurred())
+		second, err := wrapper.NewSkyhookNode(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "b"}}, &v1alpha1.NodeWright{ObjectMeta: metav1.ObjectMeta{Name: "nw"}})
+		Expect(err).NotTo(HaveOccurred())
+
+		nodes := &skyhookNodes{nodes: []wrapper.SkyhookNode{first}}
+		_, found := nodes.GetNode("a")
+		Expect(found).To(BeIdenticalTo(first))
+
+		nodes.AddNode(second)
+		_, found = nodes.GetNode("a")
+		Expect(found).To(BeIdenticalTo(first))
+		_, found = nodes.GetNode("b")
+		Expect(found).To(BeIdenticalTo(second))
+		status, missing := nodes.GetNode("c")
+		Expect(missing).To(BeNil())
+		Expect(status).To(Equal(v1alpha1.StatusUnknown))
 	})
 })

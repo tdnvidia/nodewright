@@ -454,6 +454,7 @@ var _ SkyhookNodes = &skyhookNodes{}
 type skyhookNodes struct {
 	skyhook          *wrapper.Skyhook
 	nodes            []wrapper.SkyhookNode
+	nodesByName      map[string]wrapper.SkyhookNode
 	priorStatus      v1alpha1.Status
 	compartments     map[string]*wrapper.Compartment
 	deploymentPolicy *v1alpha1.DeploymentPolicy
@@ -468,6 +469,17 @@ func (s *skyhookNodes) GetNodes() []wrapper.SkyhookNode {
 }
 
 func (s *skyhookNodes) AddNode(node wrapper.SkyhookNode) {
+	if s.nodesByName == nil {
+		s.nodesByName = make(map[string]wrapper.SkyhookNode, len(s.nodes)+1)
+		for _, existing := range s.nodes {
+			if _, dup := s.nodesByName[existing.GetNode().Name]; !dup {
+				s.nodesByName[existing.GetNode().Name] = existing
+			}
+		}
+	}
+	if _, dup := s.nodesByName[node.GetNode().Name]; !dup {
+		s.nodesByName[node.GetNode().Name] = node
+	}
 	s.nodes = append(s.nodes, node)
 }
 
@@ -979,6 +991,14 @@ func (s *skyhookNodes) CollectNodeStatus() v1alpha1.Status {
 
 // Pick will grab node if exists
 func (s *skyhookNodes) GetNode(name string) (v1alpha1.Status, wrapper.SkyhookNode) {
+	if s.nodesByName != nil {
+		if node, ok := s.nodesByName[name]; ok {
+			return node.Status(), node
+		}
+		if len(s.nodesByName) == len(s.nodes) {
+			return v1alpha1.StatusUnknown, nil
+		}
+	}
 
 	for _, node := range s.nodes {
 		if node.GetNode().Name == name {
