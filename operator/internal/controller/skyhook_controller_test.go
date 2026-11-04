@@ -2010,6 +2010,16 @@ var _ = Describe("skyhook controller tests", func() {
 		}
 		Expect(opts.Validate()).To(BeNil())
 
+		opts.PassWriteWorkers = -1
+		Expect(opts.Validate()).To(MatchError(ContainSubstring("pass write workers")))
+		opts.PassWriteWorkers = 0
+		Expect(opts.Validate()).To(BeNil())
+		opts.PassWriteWorkers = maxPassWriteWorkers + 1
+		Expect(opts.Validate()).To(MatchError(ContainSubstring("pass write workers")))
+		opts.PassWriteWorkers = maxPassWriteWorkers
+		Expect(opts.Validate()).To(BeNil())
+		opts.PassWriteWorkers = 1
+
 		// bad MaxInterval
 		opts.MaxInterval = time.Second * 0
 		Expect(opts.Validate()).ToNot(BeNil())

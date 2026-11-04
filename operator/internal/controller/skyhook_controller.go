@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NVIDIA/nodewright/operator/api/nodewright/v1alpha1"
@@ -41,6 +42,7 @@ import (
 	"github.com/NVIDIA/nodewright/operator/internal/wrapper"
 	"github.com/go-logr/logr"
 
+	"golang.org/x/sync/errgroup"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -164,6 +166,8 @@ type SkyhookOperatorOptions struct {
 	// legacy group at the removal release.
 	PublishLegacyMetrics bool `env:"PUBLISH_LEGACY_METRICS, default=true"`
 
+	PassWriteWorkers int `env:"PASS_WRITE_WORKERS, default=1"`
+
 	// Embedded rather than a separate field so the Job knobs are one nameable unit for
 	// JobReconciler while promotion keeps opts.JobStageTimeout resolving for the eight
 	// builder functions that thread SkyhookOperatorOptions, and keeps the env names flat.
@@ -203,6 +207,9 @@ func (o *SkyhookOperatorOptions) Validate() error {
 	}
 	if o.MaxInterval < time.Minute {
 		messages = append(messages, "max interval must be at least 1 minute")
+	}
+	if o.PassWriteWorkers < 0 || o.PassWriteWorkers > maxPassWriteWorkers {
+		messages = append(messages, fmt.Sprintf("pass write workers must be between 0 and %d; 0 and 1 both mean one at a time", maxPassWriteWorkers))
 	}
 
 	// CopyDirRoot must start with /
@@ -1870,7 +1877,7 @@ func (r *SkyhookReconciler) RunSkyhookPackages(ctx context.Context, clusterState
 	selectedNode := nodePicker.SelectNodes(skyhook)
 
 	outcomes := make([]nodeOutcome, len(selectedNode))
-	visited := forEachNode(1, len(selectedNode), func(i int) bool {
+	visited := forEachNode(r.opts.PassWriteWorkers, len(selectedNode), func(i int) bool {
 		selectedNode[i].DeferSkyhookWrites()
 		outcomes[i] = r.runNode(ctx, logger, clusterState, skyhook, selectedNode[i], toUninstall, beingDeleted)
 		return outcomes[i].err != nil
@@ -1923,14 +1930,33 @@ type nodeOutcome struct {
 	err     error
 }
 
+const maxPassWriteWorkers = 64
+
 func forEachNode(workers, n int, fn func(i int) (stop bool)) []bool {
 	visited := make([]bool, n)
-	for i := 0; i < n; i++ {
-		visited[i] = true
-		if fn(i) {
-			break
+	if workers <= 1 {
+		for i := 0; i < n; i++ {
+			visited[i] = true
+			if fn(i) {
+				break
+			}
 		}
+		return visited
 	}
+
+	var stop atomic.Bool
+	var group errgroup.Group
+	group.SetLimit(workers)
+	for i := 0; i < n && !stop.Load(); i++ {
+		visited[i] = true
+		group.Go(func() error {
+			if fn(i) {
+				stop.Store(true)
+			}
+			return nil
+		})
+	}
+	_ = group.Wait()
 	return visited
 }
 
@@ -2209,7 +2235,7 @@ func (r *SkyhookReconciler) SaveNodesAndSkyhook(ctx context.Context, clusterStat
 
 	nodes := skyhook.GetNodes()
 	results := make([]nodeSaveResult, len(nodes))
-	forEachNode(1, len(nodes), func(i int) bool {
+	forEachNode(r.opts.PassWriteWorkers, len(nodes), func(i int) bool {
 		results[i] = r.saveNode(ctx, clusterState, skyhook, nodes[i])
 		return false
 	})
