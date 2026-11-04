@@ -712,7 +712,7 @@ func (r *SkyhookReconciler) refreshSkyhookConditions(ctx context.Context, cluste
 // "this stage failed"; see imagePullFailure.
 func (r *SkyhookReconciler) updateImagePullFailedCondition(ctx context.Context, skyhook SkyhookNodes) error {
 	nodeWright := skyhook.GetSkyhook()
-	pods, err := r.dal.GetPods(ctx, client.InNamespace(r.opts.Namespace), client.MatchingLabels{nameLabel: nodeWright.Name})
+	pods, err := r.dal.GetPods(ctx, client.InNamespace(r.opts.Namespace), client.MatchingLabels{nameLabel: nodeWright.Name}, client.UnsafeDisableDeepCopy)
 	if err != nil {
 		return fmt.Errorf("listing package pods for nodewright [%s]: %w", nodeWright.Name, err)
 	}
@@ -1566,6 +1566,7 @@ func (r *SkyhookReconciler) setSuspendOnUnfinishedJobs(ctx context.Context, skyh
 		client.MatchingLabels{
 			fmt.Sprintf("%s/name", v1alpha1.METADATA_PREFIX): skyhook.GetSkyhook().Name,
 		},
+		client.UnsafeDisableDeepCopy,
 	)
 	if err != nil {
 		return fmt.Errorf("listing jobs to set suspend=%t for skyhook %s: %w", suspend, skyhook.GetSkyhook().Name, err)
@@ -1591,6 +1592,7 @@ func (r *SkyhookReconciler) setSuspendOnUnfinishedJobs(ctx context.Context, skyh
 		if current == suspend {
 			continue
 		}
+		job = job.DeepCopy()
 		patch := client.MergeFrom(job.DeepCopy())
 		job.Spec.Suspend = ptr(suspend)
 		if err := r.Patch(ctx, job, patch); err != nil {
@@ -3930,6 +3932,7 @@ func (r *SkyhookReconciler) ValidateRunningPackages(ctx context.Context, skyhook
 		client.MatchingLabels{
 			fmt.Sprintf("%s/name", v1alpha1.METADATA_PREFIX): skyhook.GetSkyhook().Name,
 		},
+		client.UnsafeDisableDeepCopy,
 	)
 	if err != nil {
 		return false, fmt.Errorf("error getting jobs while validating packages: %w", err)
@@ -3961,7 +3964,7 @@ func (r *SkyhookReconciler) ValidateRunningPackages(ctx context.Context, skyhook
 			// and a finished one has no node state left to claim it.
 			node, nodeExists := nodesByName[jobNodeName(job)]
 			if !nodeExists {
-				if err := deleteJobForeground(ctx, r.Client, job, "node no longer exists"); err != nil {
+				if err := deleteJobForeground(ctx, r.Client, job.DeepCopy(), "node no longer exists"); err != nil {
 					errs = append(errs, fmt.Errorf("error deleting orphaned-node job %s: %w", job.Name, err))
 				} else {
 					update = true
@@ -3977,7 +3980,7 @@ func (r *SkyhookReconciler) ValidateRunningPackages(ctx context.Context, skyhook
 
 			if jobFinished(job) {
 				if r.shouldDeleteFinishedJob(job, pkg, nodeState, skyhook) {
-					if err := deleteJobForeground(ctx, r.Client, job, "finished job no longer recorded as done in node state"); err != nil {
+					if err := deleteJobForeground(ctx, r.Client, job.DeepCopy(), "finished job no longer recorded as done in node state"); err != nil {
 						errs = append(errs, fmt.Errorf("error deleting finished job %s: %w", job.Name, err))
 					} else {
 						update = true
@@ -3995,7 +3998,7 @@ func (r *SkyhookReconciler) ValidateRunningPackages(ctx context.Context, skyhook
 				if pkg.Invalid {
 					continue
 				}
-				if err := r.InvalidPackage(ctx, job); err != nil {
+				if err := r.InvalidPackage(ctx, job.DeepCopy()); err != nil {
 					errs = append(errs, fmt.Errorf("error invalidating job %s: %w", job.Name, err))
 				}
 			}
