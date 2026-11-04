@@ -1869,62 +1869,29 @@ func (r *SkyhookReconciler) RunSkyhookPackages(ctx context.Context, clusterState
 
 	selectedNode := nodePicker.SelectNodes(skyhook)
 
-	for _, node := range selectedNode {
-		// Skip nodes that are waiting on higher-priority skyhooks
-		// This enables per-node priority ordering
-		if !IsNodeReadyForSkyhook(node.GetNode().Name, skyhook, clusterState.skyhooks) {
+	outcomes := make([]nodeOutcome, len(selectedNode))
+	visited := forEachNode(1, len(selectedNode), func(i int) bool {
+		selectedNode[i].DeferSkyhookWrites()
+		outcomes[i] = r.runNode(ctx, logger, clusterState, skyhook, selectedNode[i], toUninstall, beingDeleted)
+		return outcomes[i].err != nil
+	})
+
+	var firstErr *nodeOutcome
+	for i, node := range selectedNode {
+		if !visited[i] {
 			continue
 		}
-
-		if node.IsComplete() && !node.Changed() {
-			continue
+		node.FlushSkyhookWrites()
+		requeue = requeue || outcomes[i].requeue
+		if outcomes[i].err != nil && firstErr == nil {
+			firstErr = &outcomes[i]
 		}
-
-		// The stale-annotation clear for nodes with no interrupt-requiring package
-		// waiting on a drain now lives in UpdateDrainBlockedCondition (see
-		// cluster_state_v2.go), which runs on every pass — paused, disabled, complete,
-		// and error exits included — rather than only the passes that reach this loop.
-
-		toRun, err := packagesToRun(node, toUninstall, beingDeleted)
-		if err != nil {
-			return nil, fmt.Errorf("node %s: selecting packages to run: %w", node.GetNode().Name, err)
+	}
+	if firstErr != nil {
+		if firstErr.save {
+			return nil, r.saveThenWrap(ctx, clusterState, skyhook, firstErr.err)
 		}
-
-		interrupt, pack := nodeInterrupt(node, toRun, skyhook.GetSkyhook())
-
-		for _, f := range toRun {
-
-			owner := interrupt != nil && f.Name == pack
-			ok, err := r.ProcessInterrupt(ctx, node, f, interrupt, owner, toRun)
-			if err != nil {
-				// ProcessInterrupt may have already recorded drain blockers in memory before
-				// erroring; saveThenWrap persists them so they are not lost.
-				return nil, r.saveThenWrap(ctx, clusterState, skyhook,
-					fmt.Errorf("error processing if we should interrupt [%s:%s]: %w", f.Name, f.Version, err))
-			}
-			if !ok {
-				requeue = true
-				// Serial holds the node while this package waits on its drain or interrupt. A
-				// package waiting on other packages instead runs nothing meanwhile, so move on to
-				// them: holding the node on it would leave them never started.
-				if skyhook.GetSkyhook().Spec.Serial && !waitsOnOtherPackages(node, toRun, f, owner) {
-					break
-				}
-				continue
-			}
-
-			err = r.ApplyPackage(ctx, logger, clusterState, node, f, owner)
-			if err != nil {
-				return nil, r.saveThenWrap(ctx, clusterState, skyhook,
-					fmt.Errorf("error applying package [%s:%s]: %w", f.Name, f.Version, err))
-			}
-
-			// serial applies one package per node per pass; the requeue picks up the next.
-			if skyhook.GetSkyhook().Spec.Serial {
-				requeue = true
-				break
-			}
-		}
+		return nil, firstErr.err
 	}
 
 	// Re-run here too (also done unconditionally in refreshSkyhookConditions) so the
@@ -1948,6 +1915,83 @@ func (r *SkyhookReconciler) RunSkyhookPackages(ctx context.Context, clusterState
 	}
 
 	return nil, utilerrors.NewAggregate(errs)
+}
+
+type nodeOutcome struct {
+	requeue bool
+	save    bool
+	err     error
+}
+
+func forEachNode(workers, n int, fn func(i int) (stop bool)) []bool {
+	visited := make([]bool, n)
+	for i := 0; i < n; i++ {
+		visited[i] = true
+		if fn(i) {
+			break
+		}
+	}
+	return visited
+}
+
+func (r *SkyhookReconciler) runNode(ctx context.Context, logger logr.Logger, clusterState *clusterState, skyhook SkyhookNodes, node wrapper.SkyhookNode, toUninstall []*v1alpha1.Package, beingDeleted bool) nodeOutcome {
+	requeue := false
+	// Skip nodes that are waiting on higher-priority skyhooks
+	// This enables per-node priority ordering
+	if !IsNodeReadyForSkyhook(node.GetNode().Name, skyhook, clusterState.skyhooks) {
+		return nodeOutcome{}
+	}
+
+	if node.IsComplete() && !node.Changed() {
+		return nodeOutcome{}
+	}
+
+	// The stale-annotation clear for nodes with no interrupt-requiring package
+	// waiting on a drain now lives in UpdateDrainBlockedCondition (see
+	// cluster_state_v2.go), which runs on every pass — paused, disabled, complete,
+	// and error exits included — rather than only the passes that reach this loop.
+
+	toRun, err := packagesToRun(node, toUninstall, beingDeleted)
+	if err != nil {
+		return nodeOutcome{err: fmt.Errorf("node %s: selecting packages to run: %w", node.GetNode().Name, err)}
+	}
+
+	interrupt, pack := nodeInterrupt(node, toRun, skyhook.GetSkyhook())
+
+	for _, f := range toRun {
+
+		owner := interrupt != nil && f.Name == pack
+		ok, err := r.ProcessInterrupt(ctx, node, f, interrupt, owner, toRun)
+		if err != nil {
+			// ProcessInterrupt may have already recorded drain blockers in memory before
+			// erroring; saveThenWrap persists them so they are not lost.
+			return nodeOutcome{requeue: requeue, save: true,
+				err: fmt.Errorf("error processing if we should interrupt [%s:%s]: %w", f.Name, f.Version, err)}
+		}
+		if !ok {
+			requeue = true
+			// Serial holds the node while this package waits on its drain or interrupt. A
+			// package waiting on other packages instead runs nothing meanwhile, so move on to
+			// them: holding the node on it would leave them never started.
+			if skyhook.GetSkyhook().Spec.Serial && !waitsOnOtherPackages(node, toRun, f, owner) {
+				break
+			}
+			continue
+		}
+
+		err = r.ApplyPackage(ctx, logger, clusterState, node, f, owner)
+		if err != nil {
+			return nodeOutcome{requeue: requeue, save: true,
+				err: fmt.Errorf("error applying package [%s:%s]: %w", f.Name, f.Version, err)}
+		}
+
+		// serial applies one package per node per pass; the requeue picks up the next.
+		if skyhook.GetSkyhook().Spec.Serial {
+			requeue = true
+			break
+		}
+	}
+	return nodeOutcome{requeue: requeue}
 }
 
 // nodeStateAnnotationKey is the single annotation holding every package's status for one
@@ -2107,53 +2151,74 @@ func (r *SkyhookReconciler) saveNodeChanges(ctx context.Context, original *corev
 	})
 }
 
+type nodeSaveResult struct {
+	saved          bool
+	removePriority bool
+	errs           []error
+}
+
+func (r *SkyhookReconciler) saveNode(ctx context.Context, clusterState *clusterState, skyhook SkyhookNodes, node wrapper.SkyhookNode) nodeSaveResult {
+	var res nodeSaveResult
+	if node.Changed() {
+		originalNode, _ := clusterState.tracker.GetOriginal(node.GetNode()).(*corev1.Node)
+		err := r.saveNodeChanges(ctx, originalNode, node, skyhook.GetSkyhook().Name)
+		if err != nil {
+			res.errs = append(res.errs, fmt.Errorf("error patching node [%s]: %w", node.GetNode().Name, err))
+		}
+		res.saved = true
+
+		err = r.UpsertNodeLabelsAnnotationsPackages(ctx, skyhook.GetSkyhook(), node.GetNode())
+		if err != nil {
+			res.errs = append(res.errs, fmt.Errorf("error upserting labels, annotations, and packages config map for node [%s]: %w", node.GetNode().Name, err))
+		}
+
+		if node.IsComplete() {
+			r.recorder.Eventf(node.GetNode(), nil, EventTypeNormal, EventsReasonSkyhookStateChange, "MarkComplete", "NodeWright [%s] complete.", skyhook.GetSkyhook().Name)
+
+			// since node is complete remove from priority
+			res.removePriority = true
+		}
+	}
+
+	// updates node's condition
+	//
+	// The base is snapshotted here, after saveNodeChanges has replaced the object with the one
+	// the apiserver returned, so the diff is exactly the conditions UpdateCondition touches.
+	// Basing it on the pass's original snapshot instead would re-send whatever the kubelet
+	// changed to .status in the meantime, and would carry that snapshot's resourceVersion into
+	// the patch body, where the apiserver reads it as a precondition — turning every
+	// concurrent write into a 409 that suppresses the whole Skyhook's status update.
+	statusBase := node.GetNode().DeepCopy()
+	node.UpdateCondition()
+	if node.Changed() {
+		// conditions are in status
+		err := r.Status().Patch(ctx, node.GetNode(), client.StrategicMergeFrom(statusBase))
+		if err != nil {
+			res.errs = append(res.errs, fmt.Errorf("error patching node status [%s]: %w", node.GetNode().Name, err))
+		}
+		res.saved = true
+	}
+	return res
+}
+
 // SaveNodesAndSkyhook saves nodes and skyhook and will update the events if the skyhook status changes
 func (r *SkyhookReconciler) SaveNodesAndSkyhook(ctx context.Context, clusterState *clusterState, skyhook SkyhookNodes) (bool, []error) {
 	saved := false
 	errs := make([]error, 0)
 	logger := log.FromContext(ctx)
 
-	for _, node := range skyhook.GetNodes() {
-		if node.Changed() {
-			originalNode, _ := clusterState.tracker.GetOriginal(node.GetNode()).(*corev1.Node)
-			err := r.saveNodeChanges(ctx, originalNode, node, skyhook.GetSkyhook().Name)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("error patching node [%s]: %w", node.GetNode().Name, err))
-			}
-			saved = true
-
-			err = r.UpsertNodeLabelsAnnotationsPackages(ctx, skyhook.GetSkyhook(), node.GetNode())
-			if err != nil {
-				errs = append(errs, fmt.Errorf("error upserting labels, annotations, and packages config map for node [%s]: %w", node.GetNode().Name, err))
-			}
-
-			if node.IsComplete() {
-				r.recorder.Eventf(node.GetNode(), nil, EventTypeNormal, EventsReasonSkyhookStateChange, "MarkComplete", "NodeWright [%s] complete.", skyhook.GetSkyhook().Name)
-
-				// since node is complete remove from priority
-				skyhook.GetSkyhook().RemoveNodePriority(node.GetNode().Name)
-			}
+	nodes := skyhook.GetNodes()
+	results := make([]nodeSaveResult, len(nodes))
+	forEachNode(1, len(nodes), func(i int) bool {
+		results[i] = r.saveNode(ctx, clusterState, skyhook, nodes[i])
+		return false
+	})
+	for i, node := range nodes {
+		errs = append(errs, results[i].errs...)
+		saved = saved || results[i].saved
+		if results[i].removePriority {
+			skyhook.GetSkyhook().RemoveNodePriority(node.GetNode().Name)
 		}
-
-		// updates node's condition
-		//
-		// The base is snapshotted here, after saveNodeChanges has replaced the object with the one
-		// the apiserver returned, so the diff is exactly the conditions UpdateCondition touches.
-		// Basing it on the pass's original snapshot instead would re-send whatever the kubelet
-		// changed to .status in the meantime, and would carry that snapshot's resourceVersion into
-		// the patch body, where the apiserver reads it as a precondition — turning every
-		// concurrent write into a 409 that suppresses the whole Skyhook's status update.
-		statusBase := node.GetNode().DeepCopy()
-		node.UpdateCondition()
-		if node.Changed() {
-			// conditions are in status
-			err := r.Status().Patch(ctx, node.GetNode(), client.StrategicMergeFrom(statusBase))
-			if err != nil {
-				errs = append(errs, fmt.Errorf("error patching node status [%s]: %w", node.GetNode().Name, err))
-			}
-			saved = true
-		}
-
 		if node.GetSkyhook() != nil && node.GetSkyhook().Updated {
 			skyhook.GetSkyhook().Updated = true
 		}
@@ -4294,13 +4359,16 @@ func (r *SkyhookReconciler) ApplyPackage(ctx context.Context, logger logr.Logger
 
 	skyhookNode.SetStatus(v1alpha1.StatusInProgress)
 
-	wrapper.AddSkyhookConditionWithLegacy(skyhookNode.GetSkyhook(), metav1.Condition{
+	applyCondition := metav1.Condition{
 		Type:               wrapper.SkyhookConditionApplyPackage,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: skyhookNode.GetSkyhook().Generation,
 		LastTransitionTime: metav1.Now(),
 		Reason:             "ApplyPackage",
 		Message:            fmt.Sprintf("Applying package [%s:%s] to node [%s]", _package.Name, _package.Version, skyhookNode.GetNode().Name),
+	}
+	skyhookNode.UpdateSkyhook(func(s *wrapper.Skyhook) {
+		wrapper.AddSkyhookConditionWithLegacy(s, applyCondition)
 	})
 
 	r.recorder.Eventf(skyhookNode.GetNode(), nil, EventTypeNormal, EventsReasonSkyhookApply, "ApplyPackage", "Applying package [%s:%s] from [nodewright:%s] stage [%s]", _package.Name, _package.Version, skyhookNode.GetSkyhook().Name, stage)

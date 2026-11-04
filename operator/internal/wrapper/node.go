@@ -68,6 +68,9 @@ type SkyhookNode interface {
 	HasSkyhookAnnotations() bool
 	// CleanupSCRMetadata removes all operator-managed annotations, labels, and node conditions for this Skyhook.
 	CleanupSCRMetadata()
+	UpdateSkyhook(fn func(*Skyhook))
+	DeferSkyhookWrites()
+	FlushSkyhookWrites()
 }
 
 // SkyhookNodeOnly wraps a Node with only a Skyhook name. Use it when you need
@@ -202,6 +205,32 @@ type skyhookNode struct {
 	nodeState   v1alpha1.NodeState
 	graph       graph.DependencyGraph[*v1alpha1.Package]
 	updated     bool
+	deferring   bool
+	pending     []func(*Skyhook)
+}
+
+func (node *skyhookNode) UpdateSkyhook(fn func(*Skyhook)) {
+	if node.skyhook == nil {
+		return
+	}
+	if node.deferring {
+		node.pending = append(node.pending, fn)
+		return
+	}
+	fn(node.skyhook)
+}
+
+func (node *skyhookNode) DeferSkyhookWrites() {
+	node.deferring = true
+}
+
+func (node *skyhookNode) FlushSkyhookWrites() {
+	node.deferring = false
+	pending := node.pending
+	node.pending = nil
+	for _, fn := range pending {
+		fn(node.skyhook)
+	}
 }
 
 func (node *skyhookNode) drainStartAnnotationKey() string {
@@ -258,10 +287,11 @@ func (node *skyhookNode) SetStatus(status v1alpha1.Status) {
 		node.Uncordon()
 	}
 
-	if node.skyhook != nil {
-		node.skyhook.SetNodeStatus(node.Node.Name, status)
-		node.skyhook.SetNodeState(node.Node.Name, node.nodeState)
-	}
+	name, state := node.Node.Name, node.nodeState
+	node.UpdateSkyhook(func(s *Skyhook) {
+		s.SetNodeStatus(name, status)
+		s.SetNodeState(name, state)
+	})
 }
 
 // Status returns the current Skyhook status for this node from annotations, or StatusUnknown if unset.

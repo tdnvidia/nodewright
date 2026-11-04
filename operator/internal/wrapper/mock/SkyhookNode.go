@@ -29,7 +29,7 @@ import (
 	"github.com/go-logr/logr"
 	mock "github.com/stretchr/testify/mock"
 	v10 "k8s.io/api/core/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // NewMockSkyhookNode creates a new instance of MockSkyhookNode. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
@@ -222,6 +222,39 @@ func (_c *MockSkyhookNode_Cordon_Call) RunAndReturn(run func() bool) *MockSkyhoo
 	return _c
 }
 
+// DeferSkyhookWrites provides a mock function for the type MockSkyhookNode
+func (_mock *MockSkyhookNode) DeferSkyhookWrites() {
+	_mock.Called()
+	return
+}
+
+// MockSkyhookNode_DeferSkyhookWrites_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DeferSkyhookWrites'
+type MockSkyhookNode_DeferSkyhookWrites_Call struct {
+	*mock.Call
+}
+
+// DeferSkyhookWrites is a helper method to define mock.On call
+func (_e *MockSkyhookNode_Expecter) DeferSkyhookWrites() *MockSkyhookNode_DeferSkyhookWrites_Call {
+	return &MockSkyhookNode_DeferSkyhookWrites_Call{Call: _e.mock.On("DeferSkyhookWrites")}
+}
+
+func (_c *MockSkyhookNode_DeferSkyhookWrites_Call) Run(run func()) *MockSkyhookNode_DeferSkyhookWrites_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockSkyhookNode_DeferSkyhookWrites_Call) Return() *MockSkyhookNode_DeferSkyhookWrites_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockSkyhookNode_DeferSkyhookWrites_Call) RunAndReturn(run func()) *MockSkyhookNode_DeferSkyhookWrites_Call {
+	_c.Run(run)
+	return _c
+}
+
 // DrainBlocked provides a mock function for the type MockSkyhookNode
 func (_mock *MockSkyhookNode) DrainBlocked() ([]drain.BlockedPod, error) {
 	ret := _mock.Called()
@@ -329,6 +362,39 @@ func (_c *MockSkyhookNode_DrainStartedAt_Call) Return(time *v1.Time, err error) 
 
 func (_c *MockSkyhookNode_DrainStartedAt_Call) RunAndReturn(run func() (*v1.Time, error)) *MockSkyhookNode_DrainStartedAt_Call {
 	_c.Call.Return(run)
+	return _c
+}
+
+// FlushSkyhookWrites provides a mock function for the type MockSkyhookNode
+func (_mock *MockSkyhookNode) FlushSkyhookWrites() {
+	_mock.Called()
+	return
+}
+
+// MockSkyhookNode_FlushSkyhookWrites_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'FlushSkyhookWrites'
+type MockSkyhookNode_FlushSkyhookWrites_Call struct {
+	*mock.Call
+}
+
+// FlushSkyhookWrites is a helper method to define mock.On call
+func (_e *MockSkyhookNode_Expecter) FlushSkyhookWrites() *MockSkyhookNode_FlushSkyhookWrites_Call {
+	return &MockSkyhookNode_FlushSkyhookWrites_Call{Call: _e.mock.On("FlushSkyhookWrites")}
+}
+
+func (_c *MockSkyhookNode_FlushSkyhookWrites_Call) Run(run func()) *MockSkyhookNode_FlushSkyhookWrites_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockSkyhookNode_FlushSkyhookWrites_Call) Return() *MockSkyhookNode_FlushSkyhookWrites_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockSkyhookNode_FlushSkyhookWrites_Call) RunAndReturn(run func()) *MockSkyhookNode_FlushSkyhookWrites_Call {
+	_c.Run(run)
 	return _c
 }
 
@@ -1278,7 +1344,7 @@ func (_c *MockSkyhookNode_SetDrainBlocked_Call) Return(err error) *MockSkyhookNo
 	return _c
 }
 
-func (_c *MockSkyhookNode_SetDrainBlocked_Call) RunAndReturn(run func([]drain.BlockedPod) error) *MockSkyhookNode_SetDrainBlocked_Call {
+func (_c *MockSkyhookNode_SetDrainBlocked_Call) RunAndReturn(run func(blocked []drain.BlockedPod) error) *MockSkyhookNode_SetDrainBlocked_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -1648,6 +1714,46 @@ func (_c *MockSkyhookNode_UpdateCondition_Call) Return() *MockSkyhookNode_Update
 }
 
 func (_c *MockSkyhookNode_UpdateCondition_Call) RunAndReturn(run func()) *MockSkyhookNode_UpdateCondition_Call {
+	_c.Run(run)
+	return _c
+}
+
+// UpdateSkyhook provides a mock function for the type MockSkyhookNode
+func (_mock *MockSkyhookNode) UpdateSkyhook(fn func(*wrapper.Skyhook)) {
+	_mock.Called(fn)
+	return
+}
+
+// MockSkyhookNode_UpdateSkyhook_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'UpdateSkyhook'
+type MockSkyhookNode_UpdateSkyhook_Call struct {
+	*mock.Call
+}
+
+// UpdateSkyhook is a helper method to define mock.On call
+//   - fn func(*wrapper.Skyhook)
+func (_e *MockSkyhookNode_Expecter) UpdateSkyhook(fn any) *MockSkyhookNode_UpdateSkyhook_Call {
+	return &MockSkyhookNode_UpdateSkyhook_Call{Call: _e.mock.On("UpdateSkyhook", fn)}
+}
+
+func (_c *MockSkyhookNode_UpdateSkyhook_Call) Run(run func(fn func(*wrapper.Skyhook))) *MockSkyhookNode_UpdateSkyhook_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 func(*wrapper.Skyhook)
+		if args[0] != nil {
+			arg0 = args[0].(func(*wrapper.Skyhook))
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockSkyhookNode_UpdateSkyhook_Call) Return() *MockSkyhookNode_UpdateSkyhook_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockSkyhookNode_UpdateSkyhook_Call) RunAndReturn(run func(fn func(*wrapper.Skyhook))) *MockSkyhookNode_UpdateSkyhook_Call {
 	_c.Run(run)
 	return _c
 }

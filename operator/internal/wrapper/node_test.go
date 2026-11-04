@@ -32,6 +32,72 @@ import (
 )
 
 var _ = Describe("SkyhookNode", func() {
+	Context("deferred NodeWright writes", func() {
+		newNode := func(name string, nodeWright *v1alpha1.NodeWright) SkyhookNode {
+			node := corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}
+			skyhookNode, err := NewSkyhookNode(&node, nodeWright)
+			Expect(err).NotTo(HaveOccurred())
+			return skyhookNode
+		}
+
+		It("writes through to the shared status when not deferring", func() {
+			nodeWright := &v1alpha1.NodeWright{ObjectMeta: metav1.ObjectMeta{Name: "nw"}}
+			node := newNode("n1", nodeWright)
+
+			node.SetStatus(v1alpha1.StatusInProgress)
+
+			Expect(nodeWright.Status.NodeStatus).To(HaveKeyWithValue("n1", v1alpha1.StatusInProgress))
+			Expect(node.GetSkyhook().Updated).To(BeTrue())
+		})
+
+		It("holds status writes until flushed, then applies them in order", func() {
+			nodeWright := &v1alpha1.NodeWright{ObjectMeta: metav1.ObjectMeta{Name: "nw"}}
+			node := newNode("n1", nodeWright)
+
+			node.DeferSkyhookWrites()
+			node.SetStatus(v1alpha1.StatusInProgress)
+			node.SetStatus(v1alpha1.StatusComplete)
+
+			Expect(nodeWright.Status.NodeStatus).NotTo(HaveKey("n1"))
+			Expect(node.GetSkyhook().Updated).To(BeFalse())
+			Expect(node.Status()).To(Equal(v1alpha1.StatusComplete))
+
+			node.FlushSkyhookWrites()
+
+			Expect(nodeWright.Status.NodeStatus).To(HaveKeyWithValue("n1", v1alpha1.StatusComplete))
+			Expect(nodeWright.Status.NodeState).To(HaveKey("n1"))
+			Expect(node.GetSkyhook().Updated).To(BeTrue())
+		})
+
+		It("writes through again after a flush", func() {
+			nodeWright := &v1alpha1.NodeWright{ObjectMeta: metav1.ObjectMeta{Name: "nw"}}
+			node := newNode("n1", nodeWright)
+
+			node.DeferSkyhookWrites()
+			node.FlushSkyhookWrites()
+			node.SetStatus(v1alpha1.StatusErroring)
+
+			Expect(nodeWright.Status.NodeStatus).To(HaveKeyWithValue("n1", v1alpha1.StatusErroring))
+		})
+
+		It("keeps deferred writes of different nodes apart until each flush", func() {
+			nodeWright := &v1alpha1.NodeWright{ObjectMeta: metav1.ObjectMeta{Name: "nw"}}
+			a, b := newNode("a", nodeWright), newNode("b", nodeWright)
+
+			a.DeferSkyhookWrites()
+			b.DeferSkyhookWrites()
+			a.SetStatus(v1alpha1.StatusInProgress)
+			b.SetStatus(v1alpha1.StatusComplete)
+			a.FlushSkyhookWrites()
+
+			Expect(nodeWright.Status.NodeStatus).To(HaveKeyWithValue("a", v1alpha1.StatusInProgress))
+			Expect(nodeWright.Status.NodeStatus).NotTo(HaveKey("b"))
+
+			b.FlushSkyhookWrites()
+			Expect(nodeWright.Status.NodeStatus).To(HaveKeyWithValue("b", v1alpha1.StatusComplete))
+		})
+	})
+
 	Context("Upsert and the owed own interrupt", func() {
 		It("flags only a package that declares its own interrupt", func() {
 			node := corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "test-node"}}
