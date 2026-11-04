@@ -84,6 +84,10 @@ type clusterState struct {
 }
 
 func BuildState(skyhooks *v1alpha1.NodeWrightList, nodes *corev1.NodeList, deploymentPolicies *v1alpha1.DeploymentPolicyList) (*clusterState, error) {
+	return buildState(skyhooks, nodes, deploymentPolicies, nil)
+}
+
+func buildState(skyhooks *v1alpha1.NodeWrightList, nodes *corev1.NodeList, deploymentPolicies *v1alpha1.DeploymentPolicyList, originals map[string]*corev1.Node) (*clusterState, error) {
 
 	ret := &clusterState{
 		tracker:  ObjectTracker{objects: make(map[string]client.Object)},
@@ -118,7 +122,11 @@ func BuildState(skyhooks *v1alpha1.NodeWrightList, nodes *corev1.NodeList, deplo
 			// One original per Node, however many NodeWrights select it: Track keeps the first
 			// copy and drops later ones, so copying again for each NodeWright is pure garbage.
 			if !ret.tracker.Tracked(&node) {
-				ret.tracker.Track(node.DeepCopy())
+				if original, ok := originals[node.Name]; ok {
+					ret.tracker.Track(original)
+				} else {
+					ret.tracker.Track(node.DeepCopy())
+				}
 			}
 			ret.skyhooks[idx].AddNode(skyNode)
 		}

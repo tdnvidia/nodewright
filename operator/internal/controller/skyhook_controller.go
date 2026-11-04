@@ -506,7 +506,7 @@ func (r *SkyhookReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// get all nodes
-	nodes, err := r.dal.GetNodes(ctx)
+	cachedNodes, err := r.dal.GetNodes(ctx, client.UnsafeDisableDeepCopy)
 	if err != nil {
 		// error, going to requeue and backoff
 		logger.Error(err, "error getting nodes")
@@ -514,9 +514,14 @@ func (r *SkyhookReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// if no nodes, well not work to do either
-	if nodes == nil || len(nodes.Items) == 0 {
+	if cachedNodes == nil || len(cachedNodes.Items) == 0 {
 		// no nodes, so nothing to do
 		return ctrl.Result{}, nil
+	}
+	nodes := cachedNodes.DeepCopy()
+	originalNodes := make(map[string]*corev1.Node, len(cachedNodes.Items))
+	for i := range cachedNodes.Items {
+		originalNodes[cachedNodes.Items[i].Name] = &cachedNodes.Items[i]
 	}
 
 	// get all deployment policies
@@ -531,7 +536,7 @@ func (r *SkyhookReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// BUILD cluster state from all skyhooks, and all nodes
 	// this filters and pairs up nodes to skyhooks, also provides help methods for introspection and mutation
-	clusterState, err := BuildState(skyhooks, nodes, deploymentPolicies)
+	clusterState, err := buildState(skyhooks, nodes, deploymentPolicies, originalNodes)
 	if err != nil {
 		// error, going to requeue and backoff
 		logger.Error(err, "error building cluster state")
@@ -2216,7 +2221,7 @@ func (r *SkyhookReconciler) saveNode(ctx context.Context, clusterState *clusterS
 	// changed to .status in the meantime, and would carry that snapshot's resourceVersion into
 	// the patch body, where the apiserver reads it as a precondition — turning every
 	// concurrent write into a 409 that suppresses the whole Skyhook's status update.
-	statusBase := node.GetNode().DeepCopy()
+	statusBase := nodeConditionsBase(node.GetNode())
 	node.UpdateCondition()
 	if node.Changed() {
 		// conditions are in status
@@ -2227,6 +2232,12 @@ func (r *SkyhookReconciler) saveNode(ctx context.Context, clusterState *clusterS
 		res.saved = true
 	}
 	return res
+}
+
+func nodeConditionsBase(node *corev1.Node) *corev1.Node {
+	base := *node
+	base.Status.Conditions = slices.Clone(node.Status.Conditions)
+	return &base
 }
 
 // SaveNodesAndSkyhook saves nodes and skyhook and will update the events if the skyhook status changes

@@ -340,3 +340,34 @@ var _ = Describe("PASS_WRITE_WORKERS rollout equivalence", func() {
 		Expect(out.complete).To(BeTrue(), "the rollout did not recover from the injected failures in %d passes", out.passes)
 	})
 })
+
+var _ = Describe("pass copy reductions", func() {
+	It("keeps a node-conditions base apart from later condition edits", func() {
+		node := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "worker", Annotations: map[string]string{"a": "b"}},
+			Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: "Ready", Reason: "before"}}},
+		}
+		base := nodeConditionsBase(node)
+		node.Status.Conditions[0].Reason = "after"
+		node.Status.Conditions = append(node.Status.Conditions, corev1.NodeCondition{Type: "Other"})
+
+		Expect(base.Status.Conditions).To(HaveLen(1))
+		Expect(base.Status.Conditions[0].Reason).To(Equal("before"))
+		Expect(base.Annotations).To(HaveKeyWithValue("a", "b"))
+	})
+
+	It("tracks the given original instead of a copy", func() {
+		nw := v1alpha1.NodeWright{ObjectMeta: metav1.ObjectMeta{Name: "nw"}}
+		cached := corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker", UID: "u1"}}
+		working := &corev1.NodeList{Items: []corev1.Node{*cached.DeepCopy()}}
+
+		state, err := buildState(&v1alpha1.NodeWrightList{Items: []v1alpha1.NodeWright{nw}}, working,
+			&v1alpha1.DeploymentPolicyList{}, map[string]*corev1.Node{"worker": &cached})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(state.tracker.GetOriginal(&working.Items[0])).To(BeIdenticalTo(&cached))
+
+		copied, err := BuildState(&v1alpha1.NodeWrightList{Items: []v1alpha1.NodeWright{nw}}, working, &v1alpha1.DeploymentPolicyList{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(copied.tracker.GetOriginal(&working.Items[0])).NotTo(BeIdenticalTo(&cached))
+	})
+})
