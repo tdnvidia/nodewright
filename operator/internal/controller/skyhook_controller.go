@@ -4298,7 +4298,7 @@ func (r *SkyhookReconciler) ApplyPackage(ctx context.Context, logger logr.Logger
 	if packageStatus, found := skyhookNode.PackageStatus(_package.GetUniqueName()); found {
 		switch packageStatus.Stage {
 		case v1alpha1.StageConfig, v1alpha1.StageUpgrade, v1alpha1.StageUninstall,
-			v1alpha1.StageUninstallInterrupt:
+			v1alpha1.StageUninstallInterrupt, v1alpha1.StagePostInterrupt:
 			stage = packageStatus.Stage
 		}
 	}

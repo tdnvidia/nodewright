@@ -156,6 +156,29 @@ var _ = Describe("Jobs execution swap", func() {
 		Expect(pods.Items).To(BeEmpty())
 	})
 
+	It("re-creates the post-interrupt Job, not apply, for an in-progress post-interrupt stage with no Job", func() {
+		piPkg := pkg.DeepCopy()
+		piPkg.Interrupt = &v1alpha1.Interrupt{Type: v1alpha1.SERVICE, Services: []string{"containerd"}}
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
+		seeded, err := wrapper.NewSkyhookNodeOnly(node, skyhookName)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(seeded.Upsert(piPkg.PackageRef, image, v1alpha1.StateInProgress, v1alpha1.StagePostInterrupt, 0, "")).To(Succeed())
+		scr := &v1alpha1.NodeWright{
+			ObjectMeta: metav1.ObjectMeta{Name: skyhookName, Namespace: namespace, Generation: 1},
+			Spec:       v1alpha1.NodeWrightSpec{Packages: v1alpha1.Packages{"tuning": *piPkg}},
+		}
+		r, c := newReconciler(node, scr)
+		skyhookNode, err := wrapper.NewSkyhookNode(node, scr)
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(r.ApplyPackage(ctx, GinkgoLogr, nil, skyhookNode, piPkg, false)).To(Succeed())
+
+		var jobs batchv1.JobList
+		Expect(c.List(ctx, &jobs, client.InNamespace(namespace))).To(Succeed())
+		Expect(jobs.Items).To(HaveLen(1))
+		Expect(jobs.Items[0].Labels).To(HaveKeyWithValue(stageLabel, string(v1alpha1.StagePostInterrupt)))
+	})
+
 	It("stamps a config Job with a hash of the ConfigMap data it will mount", func() {
 		data := map[string]string{"a.properties": "new"}
 		cmPkg := pkg.DeepCopy()
