@@ -296,7 +296,7 @@ func (r *JobReconciler) handleCompleteJob(ctx context.Context, job *batchv1.Job)
 		return ctrl.Result{}, r.markJobProcessed(ctx, job, r.opts.JobTTLSucceeded)
 	}
 
-	superseded, err := r.recordJobCompletion(ctx, job, pkg)
+	superseded, pending, err := r.recordJobCompletion(ctx, job, pkg)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -306,8 +306,36 @@ func (r *JobReconciler) handleCompleteJob(ctx context.Context, job *batchv1.Job)
 	if superseded {
 		return ctrl.Result{}, deleteJobForeground(ctx, r.Client, job, "config changed while the config stage ran")
 	}
+	if pending {
+		log.FromContext(ctx).WithName("job-reconcile").V(1).Info("node state has not reached the job's stage yet; holding its completion", "job", job.Name)
+		return ctrl.Result{RequeueAfter: unrecordedCompletionRetry}, nil
+	}
 
 	return ctrl.Result{}, r.markJobProcessed(ctx, job, r.opts.JobTTLSucceeded)
+}
+
+const (
+	unrecordedCompletionGrace = 3 * time.Minute
+	unrecordedCompletionRetry = 5 * time.Second
+)
+
+func nodeBehindJob(state v1alpha1.NodeState, pkg *PackageSkyhook) bool {
+	status, present := state[pkg.GetUniqueName()]
+	return !present || (status.Stage != pkg.Stage && status.State == v1alpha1.StateComplete)
+}
+
+func completedWithin(job *batchv1.Job, window time.Duration, now time.Time) bool {
+	var finished time.Time
+	if job.Status.CompletionTime != nil {
+		finished = job.Status.CompletionTime.Time
+	} else {
+		for _, c := range job.Status.Conditions {
+			if c.Type == batchv1.JobComplete && c.Status == corev1.ConditionTrue {
+				finished = c.LastTransitionTime.Time
+			}
+		}
+	}
+	return !finished.IsZero() && now.Sub(finished) < window
 }
 
 // configSuperseded reports a config-stage Job whose stamped ConfigMap hash no longer matches the
@@ -471,17 +499,32 @@ func readForPatch[T any, P interface {
 // the patch's mutate, after the node read: a reset that lands after that read fails the
 // optimistic lock, and the retry checks the ConfigMap again. restartConfigStage always runs after
 // the ConfigMap is replaced, so a reset the patch can observe is preceded by a change the retry sees.
-func (r *JobReconciler) recordJobCompletion(ctx context.Context, job *batchv1.Job, pkg *PackageSkyhook) (bool, error) {
-	superseded := false
+func (r *JobReconciler) recordJobCompletion(ctx context.Context, job *batchv1.Job, pkg *PackageSkyhook) (bool, bool, error) {
+	superseded, pending := false, false
 	err := patchNodeState(ctx, r.dal, r.uncached, r.Client, jobNodeName(job), func(node *corev1.Node) (bool, error) {
 		var err error
+		pending = false
 		if superseded, err = r.configSuperseded(ctx, job, pkg); err != nil || superseded {
 			return false, err
 		}
 
+		before, err := wrapper.NewSkyhookNodeOnly(node, pkg.Skyhook)
+		if err != nil {
+			return false, fmt.Errorf("creating node wrapper for job %s: %w", job.Name, err)
+		}
+		beforeState, err := before.State()
+		if err != nil {
+			return false, fmt.Errorf("reading node state for job %s: %w", job.Name, err)
+		}
+		behind := nodeBehindJob(beforeState, pkg) && completedWithin(job, unrecordedCompletionGrace, time.Now())
+
 		record, err := r.shouldRecordCompletion(job, pkg, node)
-		if err != nil || !record {
+		if err != nil {
 			return false, err
+		}
+		if !record {
+			pending = behind
+			return false, nil
 		}
 
 		skyhookNode, err := wrapper.NewSkyhookNodeOnly(node, pkg.Skyhook)
@@ -532,6 +575,7 @@ func (r *JobReconciler) recordJobCompletion(ctx context.Context, job *batchv1.Jo
 			}
 			recorded = true
 		}
+		pending = behind && !recorded && !updated
 
 		if !skyhookNode.Changed() {
 			return false, nil
@@ -549,7 +593,7 @@ func (r *JobReconciler) recordJobCompletion(ctx context.Context, job *batchv1.Jo
 		}
 		return true, nil
 	})
-	return superseded, err
+	return superseded, pending, err
 }
 
 // HandleCompletePod applies the StateComplete transition, including the interrupt, upgrade and

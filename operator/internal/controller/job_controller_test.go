@@ -238,6 +238,80 @@ var _ = Describe("JobReconcile", func() {
 
 	// A config-update reset puts the entry back at (config, in_progress), the same shape the old
 	// run had, so the stamped ConfigMap hash is the only thing that says which data a Job saw.
+	Describe("a completion that lands before the node shows the Job's stage", func() {
+		completedAt := func(job *batchv1.Job, at time.Time) *batchv1.Job {
+			t := metav1.NewTime(at)
+			job.Status.CompletionTime = &t
+			return job
+		}
+
+		setNodeState := func(r client.Client, state v1alpha1.State, stage v1alpha1.Stage) {
+			var node corev1.Node
+			Expect(r.Get(ctx, types.NamespacedName{Name: nodeName}, &node)).To(Succeed())
+			sn, err := wrapper.NewSkyhookNodeOnly(&node, skyhookName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(sn.Upsert(pkgRef, image, state, stage, 0, "")).To(Succeed())
+			Expect(r.Update(ctx, &node)).To(Succeed())
+		}
+
+		It("holds the Job unmarked, then records it once the stage appears", func() {
+			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
+			job := completedAt(packageJob(v1alpha1.StageApply, false, trueCondition(batchv1.JobComplete, "")), time.Now())
+			r := newReconciler(node, job)
+
+			res, err := r.JobReconcile(ctx, job)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(unrecordedCompletionRetry))
+			Expect(jobProcessed(getJob(r, job.Name))).To(BeFalse())
+			Expect(getNodeState(r)).ToNot(HaveKey(pkgRef.GetUniqueName()))
+
+			setNodeState(r, v1alpha1.StateInProgress, v1alpha1.StageApply)
+			res, err = r.JobReconcile(ctx, getJob(r, job.Name))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeZero())
+
+			status := getNodeState(r)[pkgRef.GetUniqueName()]
+			Expect(status.Stage).To(Equal(v1alpha1.StageApply))
+			Expect(status.State).To(Equal(v1alpha1.StateComplete))
+			Expect(jobProcessed(getJob(r, job.Name))).To(BeTrue())
+		})
+
+		It("holds a later stage's Job while the node still shows the previous stage complete", func() {
+			job := completedAt(packageJob(v1alpha1.StageConfig, false, trueCondition(batchv1.JobComplete, "")), time.Now())
+			r := newReconciler(nodeWithState(v1alpha1.StateComplete, v1alpha1.StageApply), job)
+
+			res, err := r.JobReconcile(ctx, job)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(unrecordedCompletionRetry))
+			Expect(jobProcessed(getJob(r, job.Name))).To(BeFalse())
+			Expect(getNodeState(r)[pkgRef.GetUniqueName()].Stage).To(Equal(v1alpha1.StageApply))
+		})
+
+		It("marks the Job without recording once the grace has passed", func() {
+			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
+			job := completedAt(packageJob(v1alpha1.StageApply, false, trueCondition(batchv1.JobComplete, "")),
+				time.Now().Add(-2*unrecordedCompletionGrace))
+			r := newReconciler(node, job)
+
+			res, err := r.JobReconcile(ctx, job)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeZero())
+			Expect(jobProcessed(getJob(r, job.Name))).To(BeTrue())
+			Expect(getNodeState(r)).ToNot(HaveKey(pkgRef.GetUniqueName()))
+		})
+
+		It("does not hold a Job whose stage the node has moved past while it is still in progress", func() {
+			job := completedAt(packageJob(v1alpha1.StageApply, false, trueCondition(batchv1.JobComplete, "")), time.Now())
+			r := newReconciler(nodeWithState(v1alpha1.StateInProgress, v1alpha1.StageConfig), job)
+
+			res, err := r.JobReconcile(ctx, job)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeZero())
+			Expect(jobProcessed(getJob(r, job.Name))).To(BeTrue())
+			Expect(getNodeState(r)[pkgRef.GetUniqueName()].Stage).To(Equal(v1alpha1.StageConfig))
+		})
+	})
+
 	Describe("config Job completion after the ConfigMap changed", func() {
 		configMap := func(data map[string]string) *corev1.ConfigMap {
 			return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
