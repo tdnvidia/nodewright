@@ -21,6 +21,7 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -4105,5 +4106,32 @@ var _ = Describe("NodePicker and the node lifecycle taints", func() {
 		condition := findSkyhookStatusCondition(state.GetSkyhook().Status.Conditions, wrapper.SkyhookConditionTaintNotTolerable)
 		Expect(condition).NotTo(BeNil())
 		Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+	})
+})
+
+var _ = Describe("default compartment node order", func() {
+	It("is the same whatever order the node list arrives in", func() {
+		nw := v1alpha1.NodeWright{ObjectMeta: metav1.ObjectMeta{Name: "nw"}}
+		nodes := make([]corev1.Node, 0, 20)
+		for i := range 20 {
+			nodes = append(nodes, corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("node-%02d", i)}})
+		}
+		order := func(items []corev1.Node) []string {
+			state, err := BuildState(&v1alpha1.NodeWrightList{Items: []v1alpha1.NodeWright{nw}},
+				&corev1.NodeList{Items: items}, &v1alpha1.DeploymentPolicyList{})
+			Expect(err).NotTo(HaveOccurred())
+			names := []string{}
+			for _, n := range state.skyhooks[0].GetCompartments()[v1alpha1.DefaultCompartmentName].GetNodes() {
+				names = append(names, n.GetNode().Name)
+			}
+			return names
+		}
+
+		reversed := slices.Clone(nodes)
+		slices.Reverse(reversed)
+		forward := order(nodes)
+		Expect(forward).To(HaveLen(20))
+		Expect(order(reversed)).To(Equal(forward))
+		Expect(slices.IsSorted(forward)).To(BeTrue())
 	})
 })

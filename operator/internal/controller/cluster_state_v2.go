@@ -140,12 +140,6 @@ func BuildState(skyhooks *v1alpha1.NodeWrightList, nodes *corev1.NodeList, deplo
 			legacyCompartment := createLegacyDefaultCompartment(skyhook.Spec, nodeCount)
 			ret.skyhooks[idx].AddCompartment(v1alpha1.DefaultCompartmentName, wrapper.NewCompartmentWrapper(legacyCompartment, defaultBatchState))
 
-			// Assign all nodes to the default compartment for backwards compatibility
-			for _, node := range ret.skyhooks[idx].GetNodes() {
-				if err := ret.skyhooks[idx].AddCompartmentNode(v1alpha1.DefaultCompartmentName, node); err != nil {
-					return nil, fmt.Errorf("error adding node to default compartment: %w", err)
-				}
-			}
 		} else {
 			ret.initializeCompartmentsFromPolicy(idx, skyhook, deploymentPolicies)
 		}
@@ -170,6 +164,17 @@ func BuildState(skyhooks *v1alpha1.NodeWrightList, nodes *corev1.NodeList, deplo
 			}
 			return skyhook.GetNodes()[i].GetNode().Name < skyhook.GetNodes()[j].GetNode().Name
 		})
+	}
+
+	for _, skyhook := range ret.skyhooks {
+		if skyhook.GetSkyhook().Spec.DeploymentPolicy != "" {
+			continue
+		}
+		for _, node := range skyhook.GetNodes() {
+			if err := skyhook.AddCompartmentNode(v1alpha1.DefaultCompartmentName, node); err != nil {
+				return nil, fmt.Errorf("error adding node to default compartment: %w", err)
+			}
+		}
 	}
 
 	// Partition nodes into compartments for skyhooks with deployment policies
